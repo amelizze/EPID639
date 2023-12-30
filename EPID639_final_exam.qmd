@@ -1,0 +1,512 @@
+---
+title: "EPID 639 Final Exam"
+author: "Lisa Koh"
+date: "Last compiled on `r format(Sys.Date(), '%B %d, %Y')`"
+format: html
+embed-resources: true
+editor: source
+editor_options: 
+  chunk_output_type: console
+---
+
+## Preparation
+
+### Install new packages
+```{r}
+#| label: install-packages
+#| eval: false
+
+# Install packages. Do this only once.
+
+options(repos="https://cran.rstudio.com")
+#plotting
+install.packages("assertr")
+install.packages("dplyr")
+install.packages("ggplot2")
+install.packages("gt")
+install.packages("gtsummary")
+install.packages("haven")
+install.packages("scales")
+install.packages("sjlabelled")
+install.packages("tidyverse")
+install.packages("visR")
+install.packages("here")
+```
+
+### Clean Environment and RAM 
+```{r}
+#| label: clean-env
+#| output: false
+
+# Remove all existing environmental variables
+rm(list = ls())
+
+# Free up RAM
+gc()
+```
+Remove any pre-existing environmental variables, and free up RAM for this project.
+
+
+
+### Load Packages
+```{r}
+#| label: load-packages
+#| echo: false
+#| output: false
+
+library(assertr)
+library(dplyr)
+library(ggplot2)
+library(gt)
+library(gtsummary)
+library(haven)
+library(scales)
+library(sjlabelled)
+library(tidyverse)
+library(visR)
+library(here)
+```
+
+## Project
+
+### Read in Data
+```{r}
+#| label: read-data
+
+# Check file path
+here("lisakoh.XPT")
+
+# Read Data
+DEMO <- read_xpt(here("lisakoh.XPT"))
+SLQ <- read_xpt(here("P_SLQ.XPT"))
+BP <- read_xpt(here("P_BPXO.XPT"))
+
+# Check that number of rows in DEMO are within expectations
+# Error thrown and exited if conditions are not met; in QMD, will not render.
+DEMO %>% 
+  verify(nrow(.) >= 12000 && nrow(.) <= 15000)
+
+# Print dimensions of dataframes
+dim(DEMO)
+dim(SLQ)
+dim(BP)
+```
+The dataset `lisakoh.XPT`, which has `r nrow(DEMO)` rows and `r ncol(DEMO)` columns was assigned to the `DEMO` variable. The dataset `P_SLQ.XPT`, which has `r nrow(SLQ)` rows and `r ncol(SLQ)` columns was assigned to the `SLQ` variable. The dataset `P_BPXO.XPT`, which has `r nrow(BP)` rows and `r ncol(BP)` columns was assigned to the `BP` variable.
+
+###  Check Variable Classes
+
+```{r}
+#| label: check-bp-class
+
+class(BP$BPAOARM)
+class(BP$BPXODI1)
+```
+The data class of the variable "Arm selected - oscillometric" is `r class(BP$BPAOARM)`. The data class of the variable "Diastolic - 1st oscillometric reading" is `r class(BP$BPXODI1)`. 
+
+### Check Missing Values
+
+```{r}
+#| label: check-missing-vals
+
+sum(is.na(BP$BPXOSY1))
+```
+There are `r sum(is.na(BP$BPXOSY1))` missing values for the "Systolic - 1st oscillometric reading" variable.
+
+## Data Manipulation
+
+### Merge Datasets
+
+```{r}
+#| label: merge-data
+
+# Merge dataframes
+analytic_sample <- full_join(DEMO, full_join(SLQ, BP, by= "SEQN"), by = "SEQN")
+
+# Check number of columns
+# analytic_sample should have the sum of ncol for 3 dataframes, 
+# minus 2 (joining variable SEQN is not repeated)
+ncol(analytic_sample) == (ncol(DEMO) + ncol(SLQ) + ncol(BP) - 2)
+
+
+# Check Number of rows
+# analytic_sample should have minimally the maximum number of rows among
+# the 3 dataframes
+nrow(analytic_sample) >= max(nrow(DEMO), nrow(SLQ), nrow(BP))
+
+dim(analytic_sample)
+```
+`DEMO`, `SLQ`, and `BP` data frames were merged by participant number `SEQN` to form the data frame `analytic_sample`, which has `r nrow(analytic_sample)` rows and `r ncol(analytic_sample)` columns. We should expect minimally the maximum number of rows among `DEMO`, `SLQ`, and `BP` (some participants might not appear in all datasets), and expect the sum of the number of columns across all 3 data frames minus 2 (`SEQN` was not repeated). Checking dimensions, no rows nor columns should have been lost through the merge.
+
+### Simplify Dataset
+
+```{r}
+#| label: simplify-dataset
+
+# Select variables of interest
+analytic_sample <- analytic_sample %>% 
+  select(SEQN, RIAGENDR, RIDAGEYR, RIDRETH1, DMDEDUC2, 
+         SLD012, 
+         BPXOSY1, BPXODI1, BPAOARM)
+
+dim(analytic_sample)
+```
+All demographic variables, "sleep hours - weekdays or workdays", "Systolic - 1st oscillometric reading",  "Diastolic - 1st oscillometric reading", and "Arm selected - oscillometric" variables were retained and the rest were dropped, resulting in a subsequent `analytic_sample` data frame with `r nrow(analytic_sample)` rows and `r ncol(analytic_sample)` columns.
+
+
+### Creation of Pulse Pressure Variable
+```{r}
+#| label: create-pulse-pressure
+
+# Create Pulse Pressure variable
+analytic_sample <- analytic_sample %>% 
+  mutate(pulse_pressure = BPXOSY1 - BPXODI1)
+
+# Add label for pulse_pressure
+analytic_sample$pulse_pressure <- set_label(analytic_sample$pulse_pressure, 
+                                            "Pulse Pressure (mmHg)")
+# 5 number summary
+summary(analytic_sample$pulse_pressure)
+```
+Pulse pressure was defined as the difference between systolic and diastolic blood pressure, with a minimum value of `r min(analytic_sample$pulse_pressure, na.rm = TRUE)` mmHg, 25th percentile of 38 mmHg, 50th percentile of 45 mmHg, 75 quartile of 54 mmHg, maximum value of `r max(analytic_sample$pulse_pressure, na.rm = TRUE)` mmHg, and mean value of `r round(mean(analytic_sample$pulse_pressure, na.rm = TRUE), 2)` mmHg. 4600 participants had missing pulse pressure values.
+
+
+### Creation of Hypertension Variable
+
+```{r}
+#| label: create-hypertension
+
+# Create Hypertension variable (defined according to AHA)
+analytic_sample <- analytic_sample %>% 
+  mutate(hypertension = case_when(BPXOSY1 < 120 & BPXODI1 < 80 ~ "Normal",
+                                  BPXOSY1 >= 120 & BPXOSY1 <= 129 & 
+                                    BPXODI1 < 80 ~ "Elevated",
+                                  (BPXOSY1 >= 130 & BPXOSY1 <= 139) | 
+                                    (BPXODI1 >= 80 & BPXODI1 <= 89) ~ 
+                                    "Stage 1 hypertension",
+                                  (BPXOSY1 >= 140 & BPXOSY1 <= 179) | 
+                                    (BPXODI1 >= 90 & BPXODI1 <= 119) ~ 
+                                    "Stage 2 hypertension",
+                                  BPXOSY1 >= 180 | BPXODI1 >= 120 ~ 
+                                    "Hypertensive crisis")) %>%
+  mutate(hypertension = factor(hypertension, levels = c("Normal", "Elevated", 
+                                                        "Stage 1 hypertension",
+                                                        "Stage 2 hypertension",
+                                                        "Hypertensive crisis")))
+
+# Set "Normal category as reference level
+analytic_sample$hypertension <- relevel(analytic_sample$hypertension, 
+                                        ref = "Normal")
+
+# Add label for hypertension
+analytic_sample$hypertension <- set_label(analytic_sample$hypertension, 
+                                          "Blood Pressure Category")
+
+# Sanity Check
+sum(is.na(analytic_sample$hypertension)) == 
+  max(sum(is.na(analytic_sample$BPXOSY1)), sum(is.na(analytic_sample$BPXODI1)))
+
+```
+Hypertension was defined according to the American Heart Association guidelines and calculated using systolic and diastolic blood pressure variables, with "Normal" as the reference category. There are `r sum(is.na(analytic_sample$hypertension))` missing values for this variable, which is expected as this is the same value as the number of missing values for both systolic and diastolic blood pressure variables.
+
+### Create BP Table
+
+```{r}
+#| label: bp-table
+
+# Table showing number of participants by BP category
+table(analytic_sample$hypertension)
+
+# Table showing proportion of participants by BP category
+prop.table(table(analytic_sample$hypertension))
+```
+Excluding missing values, 5475 (52.89%) participants have normal blood pressure, 1169 (11.29%) participants have elevated blood pressure, 2481 (23.97%) participants have Stage 1 hypertension, 1198 (11.57%) have Stage 2 hypertension, and 29 (0.28%) participants are in Hypertensive crisis.
+
+### Categorize Demographic Variables
+
+```{r}
+#| label: recode-demo-vars
+
+# Recode gender, race/ethnicity, and education as character factors
+analytic_sample <- analytic_sample %>%
+  mutate(gender = case_when(RIAGENDR == 1 ~ "Male",
+                            RIAGENDR == 2 ~ "Female"), 
+         race_eth = case_when(RIDRETH1 == 1 ~ "Mexican American",
+                              RIDRETH1 == 2 ~ "Other Hispanic",
+                              RIDRETH1 == 3 ~ "Non-Hispanic White",
+                              RIDRETH1 == 4 ~ "Non-Hispanic Black",
+                              RIDRETH1 == 5 ~ 
+                                "Other Race - Including Multi-Racial"),
+         education = case_when(DMDEDUC2 == 1 ~ "Less than 9th grade",
+                               DMDEDUC2 == 2 ~ 
+                          "9-11th grade (Includes 12th grade with no diploma)",
+                               DMDEDUC2 == 3 ~ 
+                                  "High school graduate/GED or equivalent",
+                               DMDEDUC2 == 4 ~ "Some college or AA degree",
+                               DMDEDUC2 == 5 ~ "College graduate or above",
+                               DMDEDUC2 == 7 | DMDEDUC2 == 7 ~ NA)) %>%
+  mutate(gender = factor(gender, 
+                         levels = c("Male", "Female")),
+         race_eth = factor(race_eth, 
+                           levels = c("Mexican American",
+                                      "Other Hispanic",
+                                      "Non-Hispanic White",
+                                      "Non-Hispanic Black",
+                                      "Other Race - Including Multi-Racial")),
+         education = factor(education,
+                            levels = c("Less than 9th grade",
+                          "9-11th grade (Includes 12th grade with no diploma)",
+                                       "High school graduate/GED or equivalent",
+                                       "Some college or AA degree",
+                                       "College graduate or above")))
+
+# Add labels
+analytic_sample$gender <- set_label(analytic_sample$gender, "Gender")
+analytic_sample$race_eth <- set_label(analytic_sample$race_eth, 
+                                      "Race/Hispanic Origin")
+analytic_sample$education <- set_label(analytic_sample$education, 
+                                       "Education level - Adults 20+")
+# Print tables
+table(analytic_sample$gender)
+
+table(analytic_sample$race_eth)
+
+table(analytic_sample$education)
+
+# No. Female
+length(which(analytic_sample$gender == "Female"))
+
+# No. Non-Hispanic Black
+length(which(analytic_sample$race_eth == "Non-Hispanic Black"))
+
+# No. High School Graduates (including GED equivalent)
+length(
+  which(analytic_sample$education == "High school graduate/GED or equivalent"))
+```
+Categorical `gender`, `race_eth`, and `education` variables were created from their numeric equivalents `RIAGENDR`, `RIDRETH1`, and `DMDEDUC2`. Participants who answered "Don't know" or "Refused" for educational attainment were recoded as missing. This dataset has `r length(which(analytic_sample$gender == "Female"))` participants who identified as female, `r length(which(analytic_sample$race_eth == "Non-Hispanic Black"))` participants who identified as non-hispanic black, and `r length(which(analytic_sample$education == "High school graduate/GED or equivalent"))` participants who were high school graduates (including GED equivalent).
+
+### Create Analytic Subset
+```{r}
+#| label: create-analytic-final
+
+# Build CONSORT Diagram/Flowchart
+data_flow <- get_attrition(analytic_sample,
+                           criteria_descriptions = c("Age >= 16",
+                                                     "Hours of Sleep Available",
+                                                     "Pulse Pressure Available",
+                                                     "Gender Available",
+                                                     "Race/Ethnicity Available",
+                                                     "Education Available"),
+                           criteria_conditions = c("RIDAGEYR >= 16",
+                                                   "!SLD012 == 'NA'",
+                                                   "!pulse_pressure == 'NA'",
+                                                   "!gender == 'NA'",
+                                                   "!race_eth == 'NA'",
+                                                   "!education == 'NA'"),
+                           subject_column_name = "SEQN")
+data_flow
+
+flowchart_exclusions <- data_flow %>% 
+  visr("Criteria", "Remaining N", fill = "#DCD6F7", font_size = 10)
+flowchart_exclusions
+
+
+# Create final analytic dataset
+analytic_final <- analytic_sample %>%
+  filter(RIDAGEYR >= 16) %>%
+  drop_na(SLD012, pulse_pressure, gender, race_eth, education)
+
+# Dimensions of final analytic dataset
+dim(analytic_final)
+
+# Number of individuals dropped due to missing sleep hours data
+length(which(analytic_sample$RIDAGEYR >= 16 & is.na(analytic_sample$SLD012)))
+```
+From an initial dataset of 14952 observations, after excluding individuals who were below age 16, and individuals who had missing data for sleep hours, pulse pressure, gender, race/ethnicity, and education, a final analytic sample of 6207 observations was left. 79 individuals were dropped due to missing sleep hours, after accounting of age restrictions.
+
+### Univariate Distributions
+
+#### Continuous Variables
+```{r}
+#| label: univariate-graphs-continuous
+
+# Age - Kernel Density Plot
+ggplot(analytic_final, aes(x = RIDAGEYR)) +
+  geom_density() +
+  theme_classic() +
+    theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Age", 
+       y = "Density", 
+       title = "Kernel Density Plot of Age in Years at Time of Screening")
+
+# Sleep Hours - Boxplot
+ggplot(analytic_final, aes(x = SLD012)) + 
+  geom_boxplot(fill = "#DCD6F7") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Sleep Hours - Weekdays or Workdays", 
+       title = "Boxplot of Sleep Hours - Weekdays or Workdays")
+  
+
+# Pulse Pressure - Histogram
+ggplot(analytic_final, aes(x = pulse_pressure)) +
+  geom_histogram(fill = "#DCD6F7", color = "#294C60") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Pulse Pressure (mmHg)", 
+       y = "Count", 
+       title = "Histogram of Pulse Pressure (mmHg)")
+```
+Age was visualized using a kernel density plot, and was roughly evenly distributed, with two peaks - one around 30-40 years, and another more prominent peak around 60 years. Sleep hours was visualized using a boxplot, and was quite evenly distributed (as indicated by a symmetrical boxplot), with a median around 7.5 hours. Pulse pressure was visualized using a histogram, and is unimodal and right-skewed. 
+
+#### Categorical Variables
+```{r}
+#| label: univariate-graphs-categorical
+
+# Gender - Bar Plot
+ggplot(analytic_final, aes(x = gender)) +
+  geom_bar(fill = "#DCD6F7", color= "#294C60") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Gender", 
+       y = "Count", 
+       title = "Barplot of Binary Gender")
+
+# Race/Ethnicity - Bar Plot
+ggplot(analytic_final, aes(x = race_eth)) +
+  geom_bar(fill = "#DCD6F7", color= "#294C60") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Race/Hispanic Origin", 
+       y = "Count", 
+       title = "Barplot of Race/Hispanic Origin") +
+  scale_x_discrete(labels = wrap_format(10))
+
+
+# Education - Bar Plot
+ggplot(analytic_final, aes(x = education)) +
+  geom_bar(fill = "#DCD6F7", color= "#294C60") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Education Level - Adults 20+", 
+       y = "Count", 
+       title = "Barplot of Education Level ") +
+  scale_x_discrete(labels = wrap_format(10))
+```
+Gender was visualized using a box plot, and the distribution of participants is quite equal, with only slightly more females than males. Race and Hispanic origin was visualized using a bar plot, and showed that non-Hispanic Whites made up the largest category, followed by non-Hispanic Blacks, then other races (including multi-racial). Education was visualized using a bar plot, and showed that the there was a positive trend between educational attainment level and number of people who have achieved that education level, with a drop in the number of people who have achieved college graduate status or above.
+
+#### Descriptive Statistics
+```{r}
+#| label: univariate-descrp-stats
+
+univ_tbl <- analytic_final %>% 
+  dplyr::select(SLD012, BPXOSY1, BPXODI1, 
+                RIDAGEYR, pulse_pressure, gender, race_eth, education) %>%
+  tbl_summary(statistic = list(all_continuous() ~ "{mean} ({sd})", 
+                               all_categorical() ~ "{n} ({p}%)"),
+              missing_text = "Missing") %>%
+  bold_labels()
+
+univ_tbl
+```
+Descriptive statistics were calculated for all variables of interest - the mean number of sleep hours (weekdays) was 7.54 hours, participants were roughly 51 years when they enrolled, had a mean systolic blood pressure of 125 mmHg, a mean diastolic blood pressure of 75 mmHg, roughly equal percentages of males and female, the largest race/ethnicity category is non-Hispanic White, and the largest proportion of participants fell into the category "Some college or AA degree".
+
+### Bivariate Distributions
+
+#### Categorical Sleep
+```{r}
+#| label: dichot-sleep-pp
+
+# Dichotomize sleep hours - recommended = [7,9]
+analytic_final <- analytic_final %>% 
+  mutate(recommended_sleep = ifelse(SLD012 >= 7 & SLD012 <= 9, 
+                                    "Recommended", 
+                                    "Not Recommended")) %>%
+  mutate(recommended_sleep = 
+           factor(recommended_sleep, 
+                  levels = c("Recommended", "Not Recommended")))
+
+# Make recommended the reference level
+analytic_final$recommended_sleep <- relevel(analytic_final$recommended_sleep, 
+                                        ref = "Recommended")
+
+# Set label
+analytic_final$recommended_sleep <- 
+  set_label(analytic_final$recommended_sleep, "Hours of Sleep")
+
+
+# Dichotomized Sleep-Pulse Pressure (Violin Plot)
+ggplot(analytic_final, aes(x = recommended_sleep, y = pulse_pressure)) + 
+  geom_violin(fill = "#DCD6F7", 
+              color= "#294C60", 
+              draw_quantiles = c(0.25, 0.5, 0.75)) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Amount of Sleep", 
+       y = "Pulse Pressure", 
+       title = "Violin Plot of Pulse Pressure by Sleep Amount")
+
+```
+The distribution of pulse pressure is slightly wider and more right-skewed among individuals who get the recommended amount of sleep on weekdays compared to those who do not get the recommended amount of sleep on weekdays, but the median and interquartile range among both categories are approximately the same.
+
+
+#### Continous Sleep
+```{r}
+#| label: cont-sleep-pp
+
+# Continous sleep - Pulse Pressure (Scatterplot)
+ggplot(analytic_final, aes(x = SLD012, y = pulse_pressure)) +
+  geom_point() +
+  geom_smooth(method = 'lm', color = "#8661C1") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  labs(x = "Hours of Sleep", 
+       y = "Pulse Pressure", 
+       title = "Scatterplot of Pulse Pressure by Sleep Amount")
+```
+The distribution of pulse pressure by hours of sleep is displayed in "vertical lines" when visualized using a scatterplot, as the number of hours of sleep was answered to the nearest whole number. While there isn't a clearly defined relationship when viewing the datapoints alone, the linear trendline shows that there could be a very slight positive association between the two variables, with a slight increase in pulse pressure as the number of hours of sleep on a weekday increases.
+
+
+
+#### Descriptive Statistics
+```{r}
+#| label: bivar-descrp-stats
+
+bivar_tbl <- analytic_final %>% 
+  dplyr::select(SLD012, BPXOSY1, BPXODI1, 
+                RIDAGEYR, pulse_pressure, gender, 
+                race_eth, education, recommended_sleep) %>%
+  tbl_summary(by = recommended_sleep,
+              statistic = list(all_continuous() ~ "{mean} ({sd})", 
+                               all_categorical() ~ "{n} ({p}%)"),
+              missing_text = "Missing") %>%
+  bold_labels() %>%
+  add_overall() %>%
+  modify_header(label ~ "**Variable**") %>% #the asterisks bold the label
+  modify_spanning_header(c("stat_1", "stat_2") ~ "**Sleep Amount**") %>%
+  add_p()
+
+bivar_tbl
+```
+Apart from age at time of screening and pulse pressure, there are differences in demographic and blood pressure-related variables between individuals who get the recommended amount of sleep and who do not get the recommended amount of sleep. Among the individuals who get the recommended amount of sleep, 52% are female, and this is significantly different (at a 5% significance level) from the 49% that among individuals who do not get the recommended amount of sleep, p = 0.04 < 0.05. There are thus gender differences in the proportion of people who get and do not get the recommended amount of sleep.
+
+### Save dataset
+```{r}
+#| label: save-data
+ 
+# Save data into a CSV file
+write.csv(analytic_final, "analytic_final.csv")
+```
+The data frame `analytic_final` was saved into a CSV file called "analytic_final.csv". An advantage of this file type is that it is more universally available to be opened by other programs (e.g. Microsoft Excel, Notepad), but it is slower to import into R to be worked on in a new session.
+
+### Extra: GLM Analysis
+
+```{r}
+#| label: glm-analysis
+
+sleep_pp_glm <- glm(pulse_pressure ~ SLD012, data = analytic_final)
+
+summary(sleep_pp_glm)
+
+tbl_regression(sleep_pp_glm)
+```
+Information about running generalized linear regression models in R was obtained from the API page in RDocumentation. Information about the `tbl_regression()` function was obtained from Daniel D. Sjoberg's (the creator's) website. At a significance level of 0.05, there is a significant positive relationship between hours of sleep on weekdays and pulse pressure, p = 0.00333 and effect size 0.3527 (95% CI = [0.12, 0.59]). For every increase in 1 hour of sleep on a weekday, an individual's pulse pressure increases by 0.3527 mmHg. 
